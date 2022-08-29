@@ -95,6 +95,30 @@ print_statistics(Stat *s, const char *title)
   printf("%s: n=%d average=%f std. deviation=%f\n", title, s->n, avg, std);
 }
 
+void
+avg_statistics_pro(Stat *s, const char *title, int seq)
+{
+  double avg, std;
+  // if (seq == 0)
+  // {
+  //   s->sum += s->n*5;
+  // }
+  avg = s->sum/s->n;
+  std = sqrt((s->sqr - 2*avg*s->sum + s->n*avg*avg) / s->n);
+  //改成纳秒，和ssdsim同步
+  printf("%d\n", (int)(avg * 1000000));
+}
+
+void
+avg_statistics(Stat *s, const char *title)
+{
+  double avg, std;
+
+  avg = s->sum/s->n;
+  std = sqrt((s->sqr - 2*avg*s->sum + s->n*avg*avg) / s->n);
+  //改成纳秒，和ssdsim同步
+  printf("%d\n", (int)(avg * 1000000));
+}
 
 /*
  * Schedule next callback at time t.
@@ -128,45 +152,60 @@ syssim_report_completion(SysTime t, struct disksim_request *r, void *ctx)
   add_statistics(&st, t - r->start);
 }
 
-
+/**
+ * @brief 执行次数、读写、随机/顺序、配置文件
+ * 
+ * @param argc 
+ * @param argv 
+ * @return int 
+ */
 int
 main(int argc, char *argv[])
 {
-  int i;
-  int nsectors;
-  struct stat buf;
+  int i, is_read;
+  int nsectors = 2676846, times, blkno = 1, is_sequential;
   struct disksim_request r;
   struct disksim_interface *disksim;
 
-  if (argc != 4 || (nsectors = atoi(argv[3])) <= 0) {
-    fprintf(stderr, "usage: %s <param file> <output file> <#sectors>\n",
+  if (argc != 5 || (times = atoi(argv[1])) <= 0) {
+    fprintf(stderr, "usage: %s <tiems> <#is_sequential>\n",
 	    argv[0]);
     exit(1);
   }
+  //是否是读,==1是读,否则写
+  is_read = atoi(argv[2]);
+  //是否是随机的,==1是顺序,否则随机
+  is_sequential = atoi(argv[3]);
 
-  if (stat(argv[1], &buf) < 0)
-    panic(argv[1]);
-
-  disksim = disksim_interface_initialize(argv[1], 
-					 argv[2],
+  disksim = disksim_interface_initialize(argv[4], 
+					 "syssim.outv",
 					 syssim_report_completion,
 					 syssim_schedule_callback,
 					 syssim_deschedule_callback,
 					 0,
 					 0,
 					 0);
-
-  /* NOTE: it is bad to use this internal disksim call from external... */
   DISKSIM_srand48(1);
-
-  for (i=0; i < 1000; i++) {
+  /**
+ * 值得注意的两点是请求的 blkno 和 bytecount。
+ * 不管使用 ssdsim 还是 hddsim, disksim 内部操作的块都是以512B为单位，
+ * 所以请求的 blkno 的单位为 512B，对于 hdd 而言，大小可以任意，而对ssd而言其必须为4k的整数倍，即该值必须是8的整数倍。
+ * bytecount 的单位是字节，对于 ssd 而言同样应该是 4k 的倍数，即该值应该为4096的整数倍。
+ */
+  for (i=0; i < times; i++) {
     r.start = now;
-    r.flags = DISKSIM_READ;
+    r.flags = is_read == 1 ? DISKSIM_READ : DISKSIM_WRITE;
+    // printf("flags: %d\n", r.flags);
     r.devno = 0;
-
-    /* NOTE: it is bad to use this internal disksim call from external... */
-    r.blkno = DISKSIM_lrand48() % nsectors;
-    r.bytecount = BLOCK;
+    if (i == 0)
+    {
+      blkno = DISKSIM_lrand48()%nsectors;
+      r.blkno = blkno;
+    } else {
+      r.blkno = is_sequential == 1 ? blkno += 2 : DISKSIM_lrand48()%nsectors;
+    }
+    // printf("blkno: %d\n", r.blkno);
+    r.bytecount = BLOCK * 2;
     completed = 0;
     disksim_interface_request_arrive(disksim, now, &r);
 
@@ -187,6 +226,7 @@ main(int argc, char *argv[])
 
   disksim_interface_shutdown(disksim, now);
 
+  avg_statistics(&st, "response time");
   print_statistics(&st, "response time");
 
   exit(0);
